@@ -10,3 +10,5 @@ Modify the corresponding directories in the corresponding Rmd file to accomodate
 
 The programs use R 3.6.3. You may have to install packages to run the program. 
 
+The paper, under review,  describing the results of the program [is here](AofMR_Data_Driven_Inference_of__COVID_19_qRT_PCR_Results.pdf)
+
