@@ -1,6 +1,7 @@
 # COVID19-DataDriven-Classifier
 Data-Driven Classifier for qRT PCR Results
 
+As a final stage of the COVID-19 epidemy, patients either improve or die. The analysis of previous cases could reduce the uncertainty in the final diagnosis and possibly offer some guidelines along which we could improve attention, make arrangements, and assign resources to the patients. Giving a medical condition, clinic diagnoThe purpose of this research is to find out what are the  
 
 Modify the corresponding directories in the corresponding Rmd file to accomodate for your machine configuration.
 
