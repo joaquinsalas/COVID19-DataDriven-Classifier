@@ -1,0 +1,121 @@
+---
+title: 'SVM classifier: Ejemplo'
+author: "joaquin salas"
+date: "2020.06.26"
+output:
+  pdf_document: default
+  word_document: default
+  
+  #data saved in: "featureSelection.RData"
+  #save(list = ls(all.names=TRUE), file = "featureSelection.RData")
+  
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+Here we develop an example of the use of the SVM classifier. I am reading the whole dataset and then select examples at random to classify.
+
+
+
+```{r  echo=FALSE}
+
+
+
+
+#import libraries
+suppressMessages(library(caret))
+suppressMessages(library(caTools))
+
+suppressMessages(library(data.table)) # setnames
+
+suppressMessages(require(dplyr))
+
+suppressMessages(require(dummies)) #dummy variables
+suppressMessages(require(ggplot2))
+suppressMessages(require("Hmisc"))
+suppressMessages(library("installr"))
+suppressMessages(library(lubridate, warn.conflict = FALSE, quietly = TRUE))
+suppressMessages(library(missForest)) #missForest
+suppressMessages(library(matrixStats)) #colSds, standard deviation
+
+suppressMessages(require(multiROC))
+suppressMessages(require(nbpMatching))
+
+suppressMessages(require(plotly))
+suppressMessages(require(PRROC))
+suppressMessages(library(pROC,verbose = TRUE )) #pROC, ROC analysis
+suppressMessages(require(plyr))
+
+suppressMessages(suppressWarnings(library(randomForest))) #for randomForest
+suppressMessages(library(readr))
+
+suppressMessages(library(stringi))
+
+suppressMessages(library(tidyr)) #fill
+
+
+suppressMessages(library(e1071))
+
+suppressMessages(library(kernlab)) #svm
+
+
+
+
+
+
+```
+
+
+## Read the data
+
+Dado que utilizaremos Boruta para la seleccion de caracteristicas, reducimos la base de datos mediante la siguiente estrategia. 
+
+
+```{r preparacion, echo=FALSE}
+
+
+#working directories
+code.dir = 'E:/Documents/informs/research/2020.06.25 predicting death/code/'
+setwd(code.dir)
+
+
+
+filename = paste(code.dir, "SVMClassifier.RData", sep = "")
+load(file = filename)
+
+#directories with files that  I use across many applications related to COVID
+data.dir = 'E://Documents//informs//research//2020.06.25 predicting death//data//'
+
+
+
+```
+## Support Vector Machine Classifier
+
+We built a Support Vector Machine classifier
+
+```{r include=FALSE}
+
+n = 2
+mu = 51.17362
+sigma = 16.07209
+  #predict output. This is what you want to implement in an app
+  y_pred = predict(svm.classifier,ndata[n,],type = "prob")
+  
+  
+  print(y_pred)
+  print(2020 - (ndata[n,1]*sigma + mu))
+  print(ndata[n,])
+  
+
+
+
+
+
+
+
+
+
+```
+
+
