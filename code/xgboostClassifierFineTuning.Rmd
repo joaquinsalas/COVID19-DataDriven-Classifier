@@ -1,0 +1,457 @@
+---
+title: 'XGBoost classifier: IMSS dataset'
+author: "joaquin salas"
+date: "2020.06.29"
+output:
+  pdf_document: default
+  word_document: default
+  
+  #data saved in: "featureSelection.RData"
+  #save(list = ls(all.names=TRUE), file = "featureSelection.RData")
+  
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+Given that a patient has been confirmed positive, 
+this program construct an XGBoost classifier to infer whether the patient 
+will improve or will die.
+It uses the IMSS dataset at 
+To assess the classifier, we construct ROC and precision-recall curves.
+
+https://insightr.wordpress.com/2018/05/17/tuning-xgboost-in-r-part-i/
+
+https://www.r-bloggers.com/tuning-xgboost-in-r-part-ii/
+
+
+```{r  echo=FALSE}
+
+
+
+
+#import libraries
+suppressMessages(library(xgboost))
+
+suppressMessages(library(caret))
+suppressMessages(library(caTools))
+
+suppressMessages(library(data.table)) # setnames
+
+suppressMessages(require(dplyr))
+
+suppressMessages(require(dummies)) #dummy variables
+suppressMessages(require(ggplot2))
+suppressMessages(require("Hmisc"))
+suppressMessages(library("installr"))
+suppressMessages(library(lubridate, warn.conflict = FALSE, quietly = TRUE))
+suppressMessages(library(missForest)) #missForest
+suppressMessages(library(matrixStats)) #colSds, standard deviation
+
+suppressMessages(require(multiROC))
+suppressMessages(require(nbpMatching))
+
+suppressMessages(require(plotly))
+suppressMessages(require(PRROC))
+suppressMessages(library(pROC,verbose = TRUE )) #pROC, ROC analysis
+suppressMessages(require(plyr))
+
+suppressMessages(suppressWarnings(library(randomForest))) #for randomForest
+suppressMessages(library(readr))
+
+suppressMessages(library(stringi))
+
+suppressMessages(library(tidyr)) #fill
+
+
+suppressMessages(library(e1071))
+
+suppressMessages(library(kernlab)) #svm
+
+
+
+source("readDataSVM.R")
+
+
+
+
+```
+
+
+## Read the data
+
+Dado que utilizaremos Boruta para la seleccion de caracteristicas, reducimos la base de datos mediante la siguiente estrategia. 
+
+
+```{r preparacion, echo=FALSE}
+
+
+#working directories
+code.dir = 'E:/Documents/informs/research/2020.06.25 predicting death/code/'
+setwd(code.dir)
+
+#directories with files that  I use across many applications related to COVID
+data.dir = 'E://Documents//informs//research//2020.06.25 predicting death//data//'
+
+
+
+#files in the data.dir directory corresponding to the Health Ministery data
+files.pattern = "*CENSO NOMINAL DF*.*"
+
+files <- list.files(path = data.dir, pattern =  files.pattern)
+
+#############
+
+i = 1
+for (file in files) {
+  
+  filename = paste(data.dir, file, sep = "")
+  
+  dataset = readDataSVM(filename = filename)
+  
+  if (i == 1) {
+    data = dataset
+  }
+  else {
+    data = rbind(data, dataset)
+  }
+  i = i + 1
+}
+
+
+
+
+
+
+
+
+covid = data[data$DIAGNOSTICO_FINAL == "COVID-19",!(names(data) %in% c("DIAGNOSTICO_FINAL"))]
+condicion.medica = (covid$DESC_MOTIVO_EGRESO == "MEJORIA") | 
+  (covid$DESC_MOTIVO_EGRESO == "DEFUNCION")
+
+covid.diag = covid[condicion.medica,]
+
+threshold.nan = 0 # the current database is full
+
+covid.diag.pred = covid.diag[, !(names(covid.diag) %in% c("DESC_MOTIVO_EGRESO"))]
+
+#change predictor from factor <MEJORIA, DEFUNCION> to factor <0,1>
+pred = covid.diag$DESC_MOTIVO_EGRESO
+pred.num = c(0,nrow=length(pred), ncol= 1)
+pred.num[pred==c("MEJORIA")] = 0
+pred.num[pred==c("DEFUNCION")] = 1
+
+
+#pred.num = pred.num
+
+too.many.nan = 
+  names(covid.diag.pred)[colSums(is.na(covid.diag.pred)) > threshold.nan]
+
+
+#remove variables for which there are too many missing values
+covid.no.nan = covid.diag.pred[, !(names(covid.diag.pred) %in% c(too.many.nan))]
+
+
+
+
+##fill missing values
+covid.imp = 
+  suppressMessages(suppressWarnings(missForest(covid.no.nan, verbose=FALSE)))
+
+covid.full = covid.imp$ximp
+
+#make sure these variables are factors
+for (name in names(covid.full)) {
+  if (is.factor(covid.full[,name])) {
+    covid.full[,name] = droplevels(covid.full[,name])
+    l = levels(droplevels(covid.full[,name]))
+    if (length(l) < 2) {
+      #drop factor columns with just one level
+      covid.full = covid.full[,!(names(covid.full) %in% name)] 
+    }
+    
+  }  
+}
+
+
+
+
+#dataset for processing
+dataset = list(X = covid.full, y = pred.num) 
+
+
+dim(dataset$X)
+
+
+dataset$X$EDAD_ANO = as.numeric(dataset$X$EDAD_ANO)
+
+
+#normalize age
+print(mean(dataset$X$EDAD_ANO))
+print(sd(dataset$X$EDAD_ANO))
+dataset$X$EDAD_ANO = scale(dataset$X$EDAD_ANO)
+
+
+
+#convert categorical variables into numeric
+Xdummies = dummyVars( "~." , dataset$X)
+transf = data.frame(predict(Xdummies, newdata = dataset$X))
+dataset$X = transf
+
+
+
+
+```
+## XGBoost  Classifier
+
+We built a XGBoost classifier
+
+```{r include=FALSE}
+
+#X = dataset$X
+#y = as.factor(dataset$y)
+
+
+#ndata = cbind(X,y)
+
+#names(ndata) = make.names(names(ndata))
+
+#otherwise there will be an error during train
+#levels(dataset$y)[1]<-"positive"
+#levels(dataset$y)[2]<-"negative"
+
+
+
+
+
+#perfom cross-validation cv.trial times
+
+
+cv.trial = 1
+#accumulate the results in the ROC and precision-recall curve
+roc.auc = matrix(0,1, cv.trial)
+pr.auc = matrix(0,1, cv.trial)
+
+
+#divide subset datain half
+smp.size = floor(0.5 * nrow(dataset$X))
+
+
+#cross-validation iterations
+#for (trial in seq(1,cv.trial)) {
+
+#print(trial)
+
+
+
+sample.ind <- createDataPartition(dataset$y, p = 0.5, list = FALSE)
+
+
+
+#construct a classifier
+
+train.x = data.matrix(dataset$X[sample.ind,])
+train.y = dataset$y[sample.ind]
+
+test.x = data.matrix(dataset$X[-sample.ind,])
+test.y = dataset$y[-sample.ind]
+
+#https://insightr.wordpress.com/2018/05/17/tuning-xgboost-in-r-part-i/
+# = parameters = #
+# = eta candidates = #
+eta=c(0.05,0.1,0.2,0.5,1)
+# = colsample_bylevel candidates = #
+cs=c(1/3,2/3,1)
+# = max_depth candidates = #
+md=c(2,4,6,10)
+# = sub_sample candidates = #
+ss=c(0.25,0.5,0.75,1)
+
+# = standard model is the second value  of each vector above = #
+standard=c(2,2,3,2)
+
+# = min_child_weights candidates = #
+mcw=c(1,10,100,400)
+# = gamma candidates = #
+gamma=c(0.1,1,10,100)
+
+# = number of rounds candidates = #
+rounds=c(100, 200, 300, 500, 750, 1000, 2000, 4000)
+
+
+#eta value
+#seed for the random numbers generator
+set.seed(123)
+conv_eta = matrix(NA,500,length(eta))
+pred_eta = matrix(NA,length(test.y), length(eta))
+colnames(conv_eta) = colnames(pred_eta) = eta
+for(i in 1:length(eta)){
+  params=list(eta = eta[i], colsample_bylevel=cs[standard[2]],
+              subsample = ss[standard[4]], max_depth = md[standard[3]],
+              min_child_weigth = 1)
+  
+  xgb <- xgboost(data = train.x, 
+                 label =train.y,nrounds = 500, 
+                 numclass = 2, verbose = 0, params = params)
+  conv_eta[,i] = xgb$evaluation_log$train_rmse
+  pred_eta[,i] = predict(xgb, test.x)
+}
+
+conv_eta = data.frame(iter=1:500, conv_eta)
+conv_eta = melt(conv_eta, id.vars = "iter")
+ggplot(data = conv_eta) + geom_line(aes(x = iter, y = value, color = variable))
+(RMSE_eta = sqrt(colMeans((test.y-pred_eta)^2)))
+
+
+#colsample_bylevel
+set.seed(123)
+conv_cs = matrix(NA,500,length(cs))
+pred_cs = matrix(NA,length(test.y), length(cs))
+colnames(conv_cs) = colnames(pred_cs) = cs
+for(i in 1:length(cs)){
+  params = list(eta = eta[standard[1]], colsample_bylevel = cs[i],
+                subsample = ss[standard[4]], max_depth = md[standard[3]],
+                min_child_weigth = 1)
+  xgb=xgboost(train.x, label = train.y,nrounds = 500, 
+              numclass = 2, verbose = 0, params = params)
+  conv_cs[,i] = xgb$evaluation_log$train_rmse
+  pred_cs[,i] = predict(xgb, test.x)
+}
+conv_cs = data.frame(iter=1:500, conv_cs)
+conv_cs = melt(conv_cs, id.vars = "iter")
+ggplot(data = conv_cs) + geom_line(aes(x = iter, y = value, color = variable))
+
+(RMSE_cs = sqrt(colMeans((test.y-pred_cs)^2)))
+
+
+#max_depth
+set.seed(123)
+conv_md=matrix(NA,500,length(md))
+pred_md=matrix(NA,length(test.y),length(md))
+colnames(conv_md)=colnames(pred_md)=md
+for(i in 1:length(md)){
+  params=list(eta=eta[standard[1]],colsample_bylevel=cs[standard[2]],
+              subsample=ss[standard[4]],max_depth=md[i],
+              min_child_weigth=1)
+  xgb=xgboost(train.x, label = train.y,nrounds = 500,
+              numclass = 2, verbose = 0, params = params)
+  conv_md[,i] = xgb$evaluation_log$train_rmse
+  pred_md[,i] = predict(xgb, test.x)
+}
+
+
+conv_md=data.frame(iter=1:500,conv_md)
+conv_md=melt(conv_md,id.vars = "iter")
+ggplot(data=conv_md)+geom_line(aes(x=iter,y=value,color=variable))
+
+
+(RMSE_md=sqrt(colMeans((test.y-pred_md)^2)))
+
+#sub_sample
+
+set.seed(123)
+conv_ss=matrix(NA,500,length(ss))
+pred_ss=matrix(NA,length(test.y),length(ss))
+colnames(conv_ss)=colnames(pred_ss)=ss
+for(i in 1:length(ss)){
+  params=list(eta=eta[standard[1]],colsample_bylevel=cs[standard[2]],
+              subsample=ss[i],max_depth=md[standard[3]],
+              min_child_weigth=1)
+  xgb=xgboost(train.x, label = train.y,nrounds = 500,
+              numclass = 2, verbose = 0, params = params)
+  conv_ss[,i] = xgb$evaluation_log$train_rmse
+  pred_ss[,i] = predict(xgb, test.x)
+}
+
+conv_ss=data.frame(iter=1:500,conv_ss)
+conv_ss=melt(conv_ss,id.vars = "iter")
+ggplot(data=conv_ss)+geom_line(aes(x=iter,y=value,color=variable))
+
+(RMSE_ss=sqrt(colMeans((test.y-pred_ss)^2)))
+
+
+#min_child_weight
+set.seed(1)
+conv_mcw = matrix(NA,500,length(mcw))
+pred_mcw = matrix(NA,length(test.y), length(mcw))
+colnames(conv_mcw) = colnames(pred_mcw) = mcw
+for(i in 1:length(mcw)){
+  params = list(eta = 0.1, colsample_bylevel=2/3,
+                subsample = 1, max_depth = 6,
+                min_child_weight = mcw[i], gamma = 0)
+  xgb = xgboost(train.x, label = train.y, nrounds = 500, 
+                numclass = 2, verbose = 0, params = params)
+  conv_mcw[,i] = xgb$evaluation_log$train_rmse
+  pred_mcw[,i] = predict(xgb, test.x)
+}
+
+conv_mcw = data.frame(iter=1:500, conv_mcw)
+conv_mcw = melt(conv_mcw, id.vars = "iter")
+ggplot(data = conv_mcw) + geom_line(aes(x = iter, y = value, color = variable))
+
+
+(RMSE_mcw = sqrt(colMeans((test.y-pred_mcw)^2)))
+
+#gamma
+set.seed(123)
+conv_gamma = matrix(NA,500,length(gamma))
+pred_gamma = matrix(NA,length(test.y), length(gamma))
+colnames(conv_gamma) = colnames(pred_gamma) = gamma
+for(i in 1:length(gamma)){
+  params = list(eta = 0.1, colsample_bylevel=2/3,
+                subsample = 1, max_depth = 6, min_child_weight = 1,
+                gamma = gamma[i])
+  xgb = xgboost(train.x, label = train.y, nrounds = 500,
+                numclass = 2, verbose = 0, params = params)
+  conv_gamma[,i] = xgb$evaluation_log$train_rmse
+  pred_gamma[,i] = predict(xgb, test.x)
+}
+
+conv_gamma = data.frame(iter=1:500, conv_gamma)
+conv_gamma = melt(conv_gamma, id.vars = "iter")
+ggplot(data = conv_gamma) + geom_line(aes(x = iter, y = value, color = variable))
+
+(RMSE_gamma = sqrt(colMeans((test.y-pred_gamma)^2)))
+
+
+#rounds
+set.seed(123)
+#conv_rounds = matrix(NA,500,length(rounds))
+pred_rounds = matrix(NA,length(test.y), length(rounds))
+colnames(conv_rounds) = colnames(pred_rounds) = rounds
+for(i in 1:length(rounds)){
+  print(i)
+  params=list(eta = 0.1, colsample_bylevel=0.33,
+              subsample = 0.5, max_depth = 10,
+              min_child_weigth = 1,
+              gamma = 0.1 ) 
+  
+  xgb <- xgboost(data = train.x, 
+                 label =train.y,nrounds = rounds[i], 
+                 numclass = 2, verbose = 0, params = params)
+  #conv_rounds[,i] = xgb$evaluation_log$train_rmse
+  pred_rounds[,i] = predict(xgb, test.x)
+}
+
+#conv_rounds = data.frame(iter=1:500, conv_rounds)
+#conv_rounds = melt(conv_rounds, id.vars = "iter")
+#ggplot(data = conv_rounds) + geom_line(aes(x = iter, y = value, color = variable))
+
+(RMSE_rounds = sqrt(colMeans((test.y-pred_rounds)^2)))
+
+#, 
+#                    max.depth = 2, eta = 1, nthread = 2, 
+#                    nrounds = 2, objective = "binary:logistic")
+
+#ksvm.classifier = ksvm(y ~., data = ndata[ndata.ind,])
+
+
+
+
+
+
+
+
+```
+
+
