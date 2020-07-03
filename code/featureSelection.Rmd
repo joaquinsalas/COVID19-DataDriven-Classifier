@@ -1,0 +1,247 @@
+---
+title: 'Feature Selection'
+author: "joaquin salas"
+date: "2020.06.25"
+output:
+  pdf_document: default
+  word_document: default
+  
+  #data saved in: "featureSelection.RData"
+  #save(list = ls(all.names=TRUE), file = "featureSelection.RData")
+  
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+This program construct a classifier to discriminate between those that live and those that die.
+It uses the dataset at https://datos.gob.mx/busca/dataset/informacion-referente-a-casos-covid-19-en-mexico
+This program analyzes the features to confirm which ones are important. To assess the classifier, we construct ROC and precision-recall curves.
+
+
+
+```{r  echo=FALSE}
+
+
+
+
+#import libraries
+
+suppressMessages(suppressWarnings(library(Boruta))) #for boruta, feature selection
+suppressMessages(library(caret))
+suppressMessages(library(caTools))
+
+suppressMessages(library(data.table)) # setnames
+
+suppressMessages(require(dplyr))
+
+suppressMessages(require(dummies)) #dummy variables
+suppressMessages(require(ggplot2))
+suppressMessages(require("Hmisc"))
+suppressMessages(library("installr"))
+suppressMessages(library(lubridate, warn.conflict = FALSE, quietly = TRUE))
+suppressMessages(library(missForest)) #missForest
+suppressMessages(library(matrixStats)) #colSds, standard deviation
+
+suppressMessages(require(multiROC))
+suppressMessages(require(nbpMatching))
+
+suppressMessages(require(plotly))
+suppressMessages(require(PRROC))
+suppressMessages(library(pROC,verbose = TRUE )) #pROC, ROC analysis
+suppressMessages(require(plyr))
+
+suppressMessages(suppressWarnings(library(randomForest))) #for randomForest
+suppressMessages(library(readr))
+
+suppressMessages(library(stringi))
+
+
+suppressMessages(library(tidyr)) #fill
+
+
+
+source("readData.R")
+source("selectFeatures.R")
+
+
+
+
+```
+
+
+## Read the data
+
+Dado que utilizaremos Boruta para la seleccion de caracteristicas, reducimos la base de datos mediante la siguiente estrategia. 
+
+
+```{r preparacion, echo=FALSE}
+
+
+ 
+
+
+
+
+
+#working directories
+code.dir = 'code-directory'
+setwd(code.dir)
+
+#directories with files that  I use across many applications related to COVID
+data.dir = 'data-directory'
+
+
+
+
+#files in the data.dir directory corresponding to the Health Ministery data
+files.pattern = "your-file-pattern.csv"
+
+files <- list.files(path = data.dir, pattern =  files.pattern)
+
+
+#############
+
+i = 1
+for (file in files) {
+  
+  filename = paste(data.dir, file, sep = "")
+
+  dataset = readData(filename = filename)
+
+  if (i == 1) {
+    data = dataset
+  }
+  else {
+    data = rbind(data, dataset)
+  }
+  i = i + 1
+}
+
+
+covid = data[data$DIAGNOSTICO_FINAL == "COVID-19",]
+condicion.medica = (covid$DESC_MOTIVO_EGRESO == "MEJORIA") | 
+  (covid$DESC_MOTIVO_EGRESO == "DEFUNCION")
+covid.end = covid[condicion.medica,]
+
+threshold.nan = 0 # the current database is full
+
+X = covid.end[, !(names(covid.end) %in% c("DESC_MOTIVO_EGRESO"))]
+v = covid.end$DESC_MOTIVO_EGRESO
+y = c(0,nrow=length(v), ncol= 1)
+y[v==c("DEFUNCION")] = 1
+y[v==c("MEJORIA")] = 0
+
+y = as.factor(y)
+
+too.many.nan = names(X)[colSums(is.na(X)) > threshold.nan]
+
+  
+#remove variables for which there are too many missing values
+Xp = X[, !(names(X) %in% c(too.many.nan))]
+  
+
+##fill missing values
+Xp.imp = suppressMessages(suppressWarnings(missForest(Xp, verbose=FALSE)))
+  
+
+#dataset for processing
+dataset = list(X = Xp.imp$ximp, y = y) 
+
+dim(dataset$X)
+
+
+
+
+```
+
+
+## Feature Selection
+
+Using the Boruta technique, we carry out an analysis of the most important characteristics in determining whether the patient will result positive or negative to the qRT PCR test.
+
+
+```{r seleccion, echo=FALSE}
+
+
+#run the feature selection n-times
+n = 10
+#init variables summarizing the n-iterations
+cols = dim(dataset$X)[2]
+selected = data.frame(matrix(FALSE, nrow = n, ncol=cols))
+importance = data.frame(matrix(0, nrow = n, ncol=cols))
+
+
+setnames(selected,old = names(selected), new= names(dataset$X))
+
+#attempt several times to check for important features
+#this process may take several hours
+for (i in c(1:n)) {
+  print(i)
+  features = selectFeatures(dataset)
+  selected[i,features$attributes] = TRUE
+  importance[i,features$attributes] = features$important$meanImp
+}
+
+#number of times a variable has been selected
+num.times.selected = colSums(selected,na.rm = TRUE)
+
+#name of the important features
+important.attributes = names(selected)[num.times.selected>0]
+
+#mean values 
+imp.means = colMeans(importance[,important.attributes], na.rm = TRUE)
+
+#standard deviation of the importance
+imp.sd = sapply(importance[,important.attributes], sd, na.rm=TRUE)
+
+#save variables computed so far
+save(num.times.selected, important.attributes, imp.means, imp.sd, selected, importance, file = "borutaSummaryPublicos")
+
+
+#number of times a variable was deemed important sorted in descending order
+times.decreasing = order(num.times.selected[names(imp.means)], decreasing = TRUE)
+#names of the variables deemed important sorted in descending order
+names.decreasing = names(imp.means)[times.decreasing]
+print(num.times.selected[names.decreasing])
+
+
+# Plot the results for importance
+filename = paste("timesSelected03SSA.jpg")
+
+plot(num.times.selected[names.decreasing], imp.means[names.decreasing], xlab = "veces seleccionado", ylab = "importancia media", col = c(1:length(names.decreasing)), pch = 19, cex = 4)
+
+df = data.frame(veces = num.times.selected[names.decreasing], importancia = imp.means[names.decreasing], nombres = names.decreasing )
+write.csv(df, "veces02SSA.csv")
+ 
+dev.off()
+
+
+
+#these are features deemded important
+imp.features = selected[,important.attributes]
+
+
+
+
+
+#matrix with unique rows
+unique.selected = unique.matrix(selected)
+
+sum = colSums(unique.selected)
+attributes.always = names(unique.selected)[sum == dim(unique.selected)[1]]
+
+importance.always = importance[,names(importance) %in% attributes.always]
+
+sapply(importance.always, sd)
+
+sapply(importance.always, mean)
+
+
+save(list = ls(all.names=TRUE), file = "featureSelection.RData")
+
+ 
+
+```
+
+
