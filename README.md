@@ -5,9 +5,10 @@ As a final stage of the COVID-19 epidemy, patients either improve or die. The an
   
 Starting with patients registers in a medical dataset, including predictors and resulting patient outcome, 
 our proposal is to detect the relative importance of each characteristic and then construct a classifier with them.
-For feature selection, we use Boruta, a wrapper method constructed on top of Random Forest (RF). For the classifier, we use a XGBoost one, and we show that it outperform to a Support Vector Machine (SVM) and a RF.
+For feature selection, we use Boruta, a wrapper method constructed on top of Random Forest (RF). For the classifier, we 
+try an ensemble blending the output of a XGBoost, Support Vector Machine (SVM), RF, and Logististic Regression classifiers.
 
-We have set up a web server which runs the classifier [here](http://148.204.135.200). Also, we are proving the source code for the 
+We have set up a web server which runs the classifier [here](http://imagenes.cicataqro.ipn.mx). Also, we are proving the source code for the 
 feature selector, and the classifiers in this github. To run the code, you will have to 
 modify the corresponding directories in the Rmd file to accomodate the configuration in your machine.
 The feature selector and classifiers use the 20200628registers.csv dataset.
