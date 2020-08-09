@@ -1,0 +1,276 @@
+---
+title: 'Ensemble Classifier'
+author: "Joaquín Salas"
+date: "2020.08.08"
+output:
+  pdf_document: default
+  word_document: default
+  
+  
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+This program construct a classifier to discriminate between those that live and those that die.
+Starting with a dataset, it trains a classifier and evaluate it using ROC and precision-recall curves.
+The program divides the dataset in half for training and half for testing. It does so $n$-times. Each time, it analyses the performance. The output files include
+
+* *classifier*\_*entity*\_ROC\_*iteration*.csv
+It includes the points in the ROC curve
+
+* *classifier*\_*entity*\_PR\_*iteration*.csv
+It includes the points in the precision-recall curve
+
+*classifier* is an acronym where *RF*, *NN*, *SVM*, *XGB* stand for random forest, neural network, support vector machine and extreme gradient boosting. Entity is a two letters word referencing the state, e.g., DF, QT, SL stand for Mexico City, Queretaro and Sinaloa.
+
+*iteration* stands for the number of iteration where the performance was evaluated.
+
+
+
+```{r  echo=FALSE}
+
+
+
+
+#import libraries
+suppressMessages(library(xgboost))
+
+suppressMessages(library(caret))
+suppressMessages(library(caTools))
+
+suppressMessages(library(data.table)) # setnames
+
+suppressMessages(require(dplyr))
+
+suppressMessages(require(dummies)) #dummy variables
+suppressMessages(require(ggplot2))
+suppressMessages(require("Hmisc"))
+suppressMessages(library("installr"))
+suppressMessages(library(lubridate, warn.conflict = FALSE, quietly = TRUE))
+
+suppressMessages(library(matrixStats)) #colSds, standard deviation
+
+suppressMessages(require(multiROC))
+suppressMessages(require(nbpMatching))
+
+suppressMessages(require(plotly))
+suppressMessages(require(PRROC))
+suppressMessages(library(pROC,verbose = TRUE )) #pROC, ROC analysis
+suppressMessages(require(plyr))
+
+suppressMessages(suppressWarnings(library(randomForest))) #for randomForest
+suppressMessages(library(readr))
+
+suppressMessages(library(stringi))
+
+suppressMessages(library(tidyr)) #fill
+
+
+suppressMessages(library(e1071))
+
+suppressMessages(library(kernlab)) #svm
+
+suppressMessages(require(neuralnet)) #neural networks
+
+
+#working directories
+code.dir = 'E:/Documents/informs/research/2020.06.25 predicting death/code/'
+setwd(code.dir)
+
+#directories with files that  I use across many applications related to COVID
+data.dir = 'E://Documents//informs//research//2020.06.25 predicting death//data//'
+
+
+filename = paste(code.dir,"readDataFeatures.R", sep = "")
+source(filename)
+
+filename = paste(code.dir,"preprocessData.R", sep = "")
+source(filename)
+
+
+
+#prefix = "QT"
+#file.root = "20200802 CENSO NOMINAL "
+
+#prefix = "SL"
+#file.root = "20200730  CENSO NOMINAL "
+
+prefix = "DF"
+file.root = "20200626 CENSO NOMINAL "
+
+#acquire and preprocess the data to construct a classifier
+dataset = preprocessData(prefix, file.root, data.dir)
+
+
+
+#load classifiers
+#svm.classifier
+filename = paste(data.dir, "SVMClassifier_",prefix,".RData", sep = "")
+load(file = filename)
+
+#rf_res
+filename = paste(data.dir, "randomForestClassifier_",prefix,".RData", sep = "")
+load(file = filename)
+
+#xgb
+filename = paste(data.dir, "xgbClassifier_", prefix,".RData",sep = "")
+load(file = filename)
+
+
+#xgb
+filename = paste(data.dir, "nnClassifier_", prefix,".RData",sep = "")
+load(file = filename)
+
+
+
+#seed for the random numbers generator
+set.seed(123)
+
+
+#perfom cross-validation cv.trial times
+
+
+cv.trial = 30
+#accumulate the results in the ROC and precision-recall curve
+roc.auc = matrix(0,1, cv.trial)
+pr.auc = matrix(0,1, cv.trial)
+
+
+#divide subset datain half
+smp.size = floor(0.5 * nrow(dataset$X))
+
+#cross-validation iterations
+for (trial in seq(28,cv.trial)) {
+  
+  print(trial)
+  
+  
+  sample.ind <- createDataPartition(dataset$y, p = 0.5, list = FALSE)
+  
+  #construct a classifier
+  
+  train.x = data.matrix(dataset$X[sample.ind,])
+  #train.y = as.numeric(dataset$y[sample.ind])-1
+  train.y = dataset$y[sample.ind]
+  
+  test.x = data.matrix(dataset$X[-sample.ind,])
+  #test.y = as.numeric(dataset$y[-sample.ind])-1
+  test.y = dataset$y[-sample.ind]
+  
+  
+  result = balanceData(train.x, train.y)
+  train.x = result$X
+  train.y = result$y
+  
+  
+  #predict xgb output. This is what you want to implement in an app
+  y.pred.xgb = predict(xgb.classifier, train.x)
+  #r.minimo = -0.49
+  #r.maximo = 1.56
+  #y.xgb = (y.pred.xgb - r.minimo)/(r.maximo - r.minimo)
+  
+  y.xgb = sigmoid(3*y.pred.xgb)
+  
+  y.svm = predict(svm.classifier, train.x,type = "prob")
+  
+  y.rf = predict(rf.classifier, train.x,type = "prob")
+  
+  y.nn = predict(nn.classifier, train.x,type = "prob")
+  
+  
+  train = data.frame(y = train.y, xgb = y.xgb, svm = y.svm[,2], rf = y.rf[,2], nn = y.nn)
+  
+  ensemble.classifier = tryCatch( {
+    ensemble.classifier=neuralnet(y~. ,data=train, hidden=4,
+                                  act.fct = "logistic",
+                                  linear.output = FALSE, 
+                                  err.fct = "ce", threshold = 0.1, lifesign ="full")
+    
+  }, warning = function (war) {
+    print('warning: neuralnet did not converge. Increasing threshold')
+    ensemble.classifier=neuralnet(y~. ,data=train, hidden=4,
+                                  act.fct = "logistic",
+                                  linear.output = FALSE, 
+                                  err.fct = "ce", threshold = 0.2, lifesign ="full")
+    
+  }, error = function(err) {
+    print('error: neuralnet did not converge.  Increasing threshold')
+    ensemble.classifier=neuralnet(y~. ,data=train, hidden=4,
+                                  act.fct = "logistic",
+                                  linear.output = FALSE, 
+                                  err.fct = "ce", threshold = 0.2, lifesign ="full")
+    return(ensemble.classifier)
+    
+  }, finally = {} 
+  )
+  
+  result = balanceData(test.x, test.y)
+  test.x = result$X
+  test.y = result$y
+  
+  
+  
+  
+  #test
+  #predict xgb output. This is what you want to implement in an app
+  y.pred.xgb = predict(xgb.classifier, test.x)
+  #r.minimo = -0.49
+  #r.maximo = 1.56
+  #y.xgb = (y.pred.xgb - r.minimo)/(r.maximo - r.minimo)
+  
+  y.xgb = sigmoid(3* y.pred.xgb)
+  
+  y.svm = predict(svm.classifier, test.x,type = "prob")
+  
+  y.rf = predict(rf.classifier, test.x,type = "prob")
+  
+  y.nn = predict(nn.classifier, test.x,type = "prob")
+  
+  test = data.frame(xgb = y.xgb, svm = y.svm[,2], rf = y.rf[,2], nn = y.nn)
+  
+  
+  ## Prediction using neural network
+  pred=predict(ensemble.classifier,test)
+  
+  
+  #performance results
+  roc<-roc.curve(scores.class0 = pred, weights.class0 = test.y, curve= TRUE)
+  pr<-pr.curve(scores.class0 =  pred, weights.class0 = test.y, curve= TRUE)
+  
+  
+  #save results for analysis
+  roc.auc[ trial] = roc$auc
+  pr.auc[ trial] = pr$auc.integral
+  
+  #save results for each classifier
+  filename = sprintf("../data/ensemble_%s_roc_%03d.csv", prefix,trial)
+  write.csv(roc$curve,filename)
+  
+  filename = sprintf("../data/ensemble_%s_pr_%03d.csv", prefix,trial)
+  write.csv(pr$curve,filename)
+  
+  
+  print(roc$auc)
+  print(pr$auc.integral)
+  
+}
+
+
+
+
+
+
+
+lista = c("ensemble.classifier")
+filename = paste(data.dir, "ensembleClassifier_",prefix,".RData", sep = "")
+save(list = lista, file = filename)
+
+load(filename)
+
+
+
+
+```
+
+

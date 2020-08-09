@@ -1,0 +1,213 @@
+---
+title: 'XGBoost Classifier'
+author: "Joaquín Salas"
+date: "2020.08.08"
+output:
+  pdf_document: default
+  word_document: default
+  
+  #data saved in: "featureSelection.RData"
+  #save(list = ls(all.names=TRUE), file = "featureSelection.RData")
+  
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+This program construct a classifier to discriminate between those that live and those that die.
+Starting with a dataset, it trains a classifier and evaluate it using ROC and precision-recall curves.
+The program divides the dataset in half for training and half for testing. It does so $n$-times. Each time, it analyses the performance. The output files include
+
+* *classifier*\_*entity*\_ROC\_*iteration*.csv
+It includes the points in the ROC curve
+
+* *classifier*\_*entity*\_PR\_*iteration*.csv
+It includes the points in the precision-recall curve
+
+*classifier* is an acronym where *RF*, *NN*, *SVM*, *XGB* stand for random forest, neural network, support vector machine and extreme gradient boosting. Entity is a two letters word referencing the state, e.g., DF, QT, SL stand for Mexico City, Queretaro and Sinaloa.
+
+*iteration* stands for the number of iteration where the performance was evaluated.
+
+
+```{r  echo=FALSE}
+
+
+
+
+#import libraries
+suppressMessages(library(xgboost))
+
+suppressMessages(library(caret))
+suppressMessages(library(caTools))
+
+suppressMessages(library(data.table)) # setnames
+
+suppressMessages(require(dplyr))
+
+suppressMessages(require(dummies)) #dummy variables
+suppressMessages(require(ggplot2))
+suppressMessages(require("Hmisc"))
+suppressMessages(library("installr"))
+suppressMessages(library(lubridate, warn.conflict = FALSE, quietly = TRUE))
+suppressMessages(library(missForest)) #missForest
+suppressMessages(library(matrixStats)) #colSds, standard deviation
+
+suppressMessages(require(multiROC))
+suppressMessages(require(nbpMatching))
+
+suppressMessages(require(plotly))
+suppressMessages(require(PRROC))
+suppressMessages(library(pROC,verbose = TRUE )) #pROC, ROC analysis
+suppressMessages(require(plyr))
+
+suppressMessages(suppressWarnings(library(randomForest))) #for randomForest
+suppressMessages(library(readr))
+
+suppressMessages(library(stringi))
+
+suppressMessages(library(tidyr)) #fill
+
+
+suppressMessages(library(e1071))
+
+suppressMessages(library(kernlab)) #svm
+
+
+#working directories
+code.dir = 'E:/Documents/informs/research/2020.06.25 predicting death/code/'
+setwd(code.dir)
+
+#directories with files that  I use across many applications related to COVID
+data.dir = 'E://Documents//informs//research//2020.06.25 predicting death//data//'
+
+
+
+filename = paste(code.dir,"preprocessData.R", sep = "")
+source(filename)
+
+
+#prefix = "QT"
+#file.root = "20200802 CENSO NOMINAL "
+
+#prefix = "SL"
+#file.root = "20200730  CENSO NOMINAL "
+
+prefix = "DF"
+file.root = "20200626 CENSO NOMINAL "
+
+#acquire and preprocess the data to construct a classifier
+dataset = preprocessData(prefix, file.root, data.dir)
+
+
+
+#seed for the random numbers generator
+set.seed(123)
+
+
+#perfom cross-validation cv.trial times
+
+
+cv.trial = 30
+#accumulate the results in the ROC and precision-recall curve
+roc.auc = matrix(0,1, cv.trial)
+pr.auc = matrix(0,1, cv.trial)
+
+
+#divide subset datain half
+smp.size = floor(0.5 * nrow(dataset$X))
+
+
+#cross-validation iterations
+for (trial in seq(1,cv.trial)) {
+  
+  print(trial)
+  
+  
+  
+  sample.ind <- createDataPartition(dataset$y, p = 0.5, list = FALSE)
+  
+  #construct a classifier
+  
+  train.x = data.matrix(dataset$X[sample.ind,])
+  #train.y = as.numeric(dataset$y[sample.ind])-1
+  train.y = dataset$y[sample.ind]
+  
+  test.x = data.matrix(dataset$X[-sample.ind,])
+  #test.y = as.numeric(dataset$y[-sample.ind])-1
+  test.y = dataset$y[-sample.ind]
+  
+  
+  result = balanceData(train.x, train.y)
+  train.x = result$X
+  train.y = result$y
+  
+  
+  #construct a classifier
+  
+  r.eta = 0.1480863
+  r.cs = 0.3408778
+  r.md = 1
+  r.ss = 0.452943
+  r.gamma = 0.1494112
+  
+  r.count = 696
+  params=list(eta = r.eta, colsample_bylevel=r.cs,
+              subsample = r.ss, max_depth = r.md,
+              gamma = r.gamma) 
+  
+  xgb.classifier <- suppressWarnings(suppressMessages(xgboost(data = train.x, 
+                 label =train.y,nrounds = r.count, 
+                 numclass = 2, verbose = 0, params = params)))
+  
+  result = balanceData(test.x, test.y)
+  test.x = result$X
+  test.y = result$y
+  
+  
+  #predict output. This is what you want to implement in an app
+  y.pred = predict(xgb.classifier, test.x)
+  
+  
+  y.pred.n = sigmoid(y.pred*3) #3 is an arbitrary constant. y.pred values range from -0.5 to 1.5
+
+  #performance results
+  roc<-roc.curve(scores.class0 = y.pred.n,
+                 weights.class0 = test.y, curve= TRUE)
+  pr<-pr.curve(scores.class0 =  y.pred.n,
+               weights.class0 = test.y, curve= TRUE)
+  
+  
+  #save results for analysis
+  roc.auc[ trial] = roc$auc
+  pr.auc[ trial] = pr$auc.integral
+  
+  #save results for each classifier
+  filename = sprintf("../data/xgb_%s_roc_%03d.csv", prefix,trial)
+  write.csv(roc$curve,filename)
+  
+  filename = sprintf("../data/xgb_%s_pr_%03d.csv", prefix, trial)
+  write.csv(pr$curve,filename)
+  
+  
+  print(roc$auc)
+  print(pr$auc.integral)
+
+}
+
+
+
+
+
+
+mu = dataset$mu
+sigma = dataset$sigma
+
+lista = c("xgb.classifier", "sigma", "mu")
+filename = paste(data.dir, "xgbClassifier_",prefix,".RData", sep = "")
+save(list = lista, file = filename)
+
+load(file = filename)
+
+```
+
+

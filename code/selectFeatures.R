@@ -1,5 +1,8 @@
+
+
+
 #perform feature analysis using Boruta
-selectFeatures <- function (dataset) {
+selectFeatures <- function (dataset, prefix) {
   
   
   #select features
@@ -7,7 +10,7 @@ selectFeatures <- function (dataset) {
   
   
   # save boruta results
-  filename = paste("boruta2.jpg", sep="")
+  filename = paste(figures.dir, "boruta_", prefix,".jpg", sep = "")
   jpeg(filename, width = 700, height = 350)
   
   plot(boruta.train, xlab = "", xaxt = "n")

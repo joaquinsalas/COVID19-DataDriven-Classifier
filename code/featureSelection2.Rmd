@@ -1,0 +1,237 @@
+---
+title: 'Feature Selection'
+author: "Joaquin Salas"
+date: "2020.08.08"
+output:
+  pdf_document: default
+  word_document: default
+  
+  #data saved in: "featureSelection.RData"
+  #save(list = ls(all.names=TRUE), file = "featureSelection.RData")
+  
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+This program extract important features useful to distinguish a patient prognosis. Our approach is based on Boruta, a wrapper feature detection method, which feeds from a classifier that delivers a measure of importance, in our case Random Forest.  
+
+
+
+```{r  echo=FALSE}
+
+
+
+
+#import libraries
+
+suppressMessages(suppressWarnings(library(Boruta))) #for boruta, feature selection
+suppressMessages(library(caret))
+suppressMessages(library(caTools))
+
+suppressMessages(library(data.table)) # setnames
+
+suppressMessages(require(dplyr))
+
+suppressMessages(require(dummies)) #dummy variables
+suppressMessages(require(ggplot2))
+suppressMessages(require("Hmisc"))
+suppressMessages(library("installr"))
+suppressMessages(library(lubridate, warn.conflict = FALSE, quietly = TRUE))
+suppressMessages(library(missForest)) #missForest
+suppressMessages(library(matrixStats)) #colSds, standard deviation
+
+#suppressMessages(require(multiROC))
+suppressMessages(require(nbpMatching))
+
+suppressMessages(require(plotly))
+#suppressMessages(require(PRROC))
+#suppressMessages(library(pROC,verbose = TRUE )) #pROC, ROC analysis
+suppressMessages(require(plyr))
+
+#suppressMessages(suppressWarnings(library(randomForest))) #for randomForest
+suppressMessages(library(readr))
+
+suppressMessages(library(stringi))
+
+
+suppressMessages(library(tidyr)) #fill
+
+
+
+
+
+
+
+
+```
+
+
+## Read the data
+
+To apply this program to your data, you need to redefine the directories where you place 
+the data and the code. Also, you need to specify the directory in your local machine where you are placing your figures.  
+
+In the case of Mexico, we have found it convenient to perform this analysis at state level. We use a two letter convention to distinguish among the states, e.g., Queretaro would be QT, Mexico City would be DF and Sinaloa would be SL. Some of these entities are so large that require more more than one file. We suggest to use a pattern to naming files that start with the date and follows my the identity naming convention, e.g., a file name may be '20200620 QT *.csv' 
+
+
+```{r preparacion, echo=FALSE}
+
+
+#working directories
+code.dir = 'E:/Documents/informs/research/2020.06.25 predicting death/code/'
+setwd(code.dir)
+
+
+filename = paste(code.dir,"selectFeatures.R", sep = "")
+source(filename)
+filename = paste(code.dir,"acquireData.R", sep = "")
+source(filename)
+
+  
+#directories with files that  I use across many applications related to COVID
+data.dir = 'E://Documents//informs//research//2020.06.25 predicting death//data//'
+
+
+#directories with files that  I use across many applications related to COVID
+figures.dir = 'E://Documents//informs//research//2020.06.25 predicting death//figures//'
+
+
+
+#files in the data.dir directory corresponding to the Health Ministery data
+prefix = "QT"
+files.pattern = paste("20200802 CENSO NOMINAL ",prefix, "*.*", sep = "")
+
+dataset = acquireData(data.dir, files.pattern)
+
+
+```
+
+
+## Feature Selection
+
+Using the Boruta technique, we carry out an analysis of the most important characteristics in determining a consistently selected in each iteration. This program is not meant to generate a report by itself but rather, it generates files for further representation. The input includes
+
+* borutaSummaryPublicos_*entity*.RData
+The data result of the feature selection process, which may take several hours to compute
+
+* timesSelected_*entity*.png
+A graph illustrating the number of times a feature has been selected
+
+* timesSelected_*entity*.csv
+A csv file with information about the the number of times a feature has been selected. Meant for further processing 
+
+
+* importancia_*entity*.csv
+Data summarizing the name of the feature deemed important, its mean importance and the standar deviation of the measure of importance over the iterations
+
+
+* featureSelection_*entity*.RData
+A file containing attributes, a variable with the names of the features that were deemed important
+
+
+
+```{r seleccion, echo=FALSE}
+
+
+#run the feature selection n-times
+n = 30
+#init variables summarizing the n-iterations
+cols = dim(dataset$X)[2]
+selected = data.frame(matrix(FALSE, nrow = n, ncol=cols))
+importance = data.frame(matrix(0, nrow = n, ncol=cols))
+
+
+setnames(selected,old = names(selected), new= names(dataset$X))
+
+#attempt several times to check for important features
+#this process may take several hours
+for (i in c(1:n)) {
+  print(i)
+  
+  train = balanceData(dataset$X, dataset$y)
+  
+
+  features = selectFeatures(train, prefix)
+  selected[i,features$attributes] = TRUE
+  importance[i,features$attributes] = features$important$meanImp
+}
+
+#number of times a variable has been selected
+num.times.selected = colSums(selected,na.rm = TRUE)
+
+#name of the important features
+important.attributes = names(selected)[num.times.selected>0]
+
+#mean values 
+imp.means = colMeans(importance[,important.attributes], na.rm = TRUE)
+
+#standard deviation of the importance
+imp.sd = sapply(importance[,important.attributes], sd, na.rm=TRUE)
+
+#save variables computed so far
+filename = paste(data.dir,"borutaSummaryPublicos_",prefix,sep="")
+save(num.times.selected, important.attributes, imp.means, imp.sd, selected, importance, file = filename)
+
+
+#number of times a variable was deemed important sorted in descending order
+times.decreasing = order(num.times.selected[names(imp.means)], decreasing = TRUE)
+#names of the variables deemed important sorted in descending order
+names.decreasing = names(imp.means)[times.decreasing]
+print(num.times.selected[names.decreasing])
+
+
+# Plot the results for importance
+
+filename = paste(figures.dir,"timesSelected_",prefix,".png",sep="")
+plot(num.times.selected[names.decreasing], imp.means[names.decreasing], xlab = "veces seleccionado", ylab = "importancia media", col = c(1:length(names.decreasing)), pch = 19, cex = 4)
+
+df = data.frame(veces = num.times.selected[names.decreasing], importancia = imp.means[names.decreasing], nombres = names.decreasing )
+filename = paste(data.dir,"timesSelected_",prefix,".csv",sep="")
+write.csv(df, filename)
+ 
+dev.off()
+
+
+
+#these are features deemded important
+imp.features = selected[,important.attributes]
+
+
+
+
+
+#matrix with unique rows
+unique.selected = unique.matrix(selected)
+
+sum = colSums(unique.selected)
+attributes.always = names(unique.selected)[sum == dim(unique.selected)[1]]
+
+importance.always = importance[,names(importance) %in% attributes.always]
+
+sapply(importance.always, sd)
+
+sapply(importance.always, mean)
+
+
+
+importancia = data.frame(mu = sapply(importance.always, mean), sd = sapply(importance.always, sd) )
+
+importancia <-importancia[order(-importancia$mu),]
+
+filename = paste(data.dir,"importancia_",prefix,".csv",sep="")
+write.csv(importancia, filename)
+
+
+
+filename = paste(data.dir,"featureSelection_",prefix,".RData",sep="")
+attributes = names(importance.always)
+save(list = "attributes", file = filename)
+
+#save(list = ls(all.names=TRUE), file = filename)
+
+ 
+
+```
+
+
