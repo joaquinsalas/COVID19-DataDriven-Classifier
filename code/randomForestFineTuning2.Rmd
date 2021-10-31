@@ -1,0 +1,306 @@
+---
+title: 'Random Forest Classifier'
+author: "joaquin salas"
+date: "2020.07.07"
+output:
+  pdf_document: default
+  word_document: default
+  
+  #data saved in: "featureSelection.RData"
+  #save(list = ls(all.names=TRUE), file = "featureSelection.RData")
+  
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+This program construct a classifier to discriminate between those that live and those that die.
+It uses the   dataset at https://datos.gob.mx/busca/dataset/informacion-referente-a-casos-covid-19-en-mexico
+This program analyzes the features to confirm which ones are important. To assess the classifier, we construct ROC and precision-recall curves.
+
+
+
+```{r  echo=FALSE}
+
+
+
+
+#import libraries
+
+#suppressMessages(suppressWarnings(library(Boruta))) #for boruta, feature selection
+suppressMessages(library(caret))
+suppressMessages(library(caTools))
+
+suppressMessages(library(data.table)) # setnames
+
+suppressMessages(require(dplyr))
+
+suppressMessages(require(dummies)) #dummy variables
+suppressMessages(require(ggplot2))
+suppressMessages(require("Hmisc"))
+suppressMessages(library("installr"))
+suppressMessages(library(lubridate, warn.conflict = FALSE, quietly = TRUE))
+suppressMessages(library(missForest)) #missForest
+suppressMessages(library(matrixStats)) #colSds, standard deviation
+
+suppressMessages(require(multiROC))
+suppressMessages(require(nbpMatching))
+
+suppressMessages(require(plotly))
+suppressMessages(require(PRROC))
+suppressMessages(library(pROC,verbose = TRUE )) #pROC, ROC analysis
+suppressMessages(require(plyr))
+
+suppressMessages(suppressWarnings(library(randomForest))) #for randomForest
+suppressMessages(library(readr))
+
+suppressMessages(library(stringi))
+
+
+suppressMessages(library(tidyr)) #fill
+
+
+#if this doesnot work, you can go back to randomforestDeath
+
+#source("readData.R")
+#source("selectFeatures.R")
+
+source("readDataSVM.R")
+
+
+```
+
+
+## Read the data
+
+Dado que utilizaremos Boruta para la seleccion de caracteristicas, reducimos la base de datos mediante la siguiente estrategia. 
+
+
+```{r preparacion, echo=FALSE}
+
+
+#working directories
+code.dir = 'E:/Documents/informs/research/2020.06.25 predicting death/code/'
+setwd(code.dir)
+
+#directories with files that  I use across many applications related to COVID
+data.dir = 'E://Documents//informs//research//2020.06.25 predicting death//data//'
+
+
+
+#files in the data.dir directory corresponding to the Health Ministery data
+files.pattern = "a_*CENSO NOMINAL DF*.*"
+
+files <- list.files(path = data.dir, pattern =  files.pattern)
+
+#############
+
+i = 1
+for (file in files) {
+  
+  filename = paste(data.dir, file, sep = "")
+  
+  dataset = readDataSVM(filename = filename)
+  
+  if (i == 1) {
+    data = dataset
+  }
+  else {
+    data = rbind(data, dataset)
+  }
+  i = i + 1
+}
+
+
+
+
+
+
+
+
+covid = data[data$DIAGNOSTICO_FINAL == "COVID-19",!(names(data) %in% c("DIAGNOSTICO_FINAL"))]
+condicion.medica = (covid$DESC_MOTIVO_EGRESO == "MEJORIA") | 
+  (covid$DESC_MOTIVO_EGRESO == "DEFUNCION")
+
+covid.diag = covid[condicion.medica,]
+
+threshold.nan = 0 # the current database is full
+
+covid.diag.pred = covid.diag[, !(names(covid.diag) %in% c("DESC_MOTIVO_EGRESO"))]
+
+#change predictor from factor <MEJORIA, DEFUNCION> to factor <0,1>
+pred = covid.diag$DESC_MOTIVO_EGRESO
+pred.num = c(0,nrow=length(pred), ncol= 1)
+pred.num[pred==c("MEJORIA")] = 0
+pred.num[pred==c("DEFUNCION")] = 1
+
+
+#pred.num = as.factor(pred.num)
+
+too.many.nan = 
+  names(covid.diag.pred)[colSums(is.na(covid.diag.pred)) > threshold.nan]
+
+
+#remove variables for which there are too many missing values
+covid.no.nan = covid.diag.pred[, !(names(covid.diag.pred) %in% c(too.many.nan))]
+
+
+
+
+##fill missing values
+covid.imp = 
+  suppressMessages(suppressWarnings(missForest(covid.no.nan, verbose=FALSE)))
+
+covid.full = covid.imp$ximp
+
+#make sure these variables are factors
+for (name in names(covid.full)) {
+  if (is.factor(covid.full[,name])) {
+    covid.full[,name] = droplevels(covid.full[,name])
+    l = levels(droplevels(covid.full[,name]))
+    if (length(l) < 2) {
+      #drop factor columns with just one level
+      covid.full = covid.full[,!(names(covid.full) %in% name)] 
+    }
+    
+  }  
+}
+
+
+
+
+#dataset for processing
+dataset = list(X = covid.full, y = pred.num) 
+
+
+dim(dataset$X)
+
+
+dataset$X$EDAD_ANO = as.numeric(dataset$X$EDAD_ANO)
+
+#convert categorical variables into numeric
+Xdummies = dummyVars( "~." , dataset$X)
+transf = data.frame(predict(Xdummies, newdata = dataset$X))
+dataset$X = transf
+
+
+#normalize age
+mu = mean(dataset$X$EDAD_ANO)
+sigma = sd(dataset$X$EDAD_ANO)
+print(mu)
+print(sigma)
+dataset$X$EDAD_ANO = c(scale(dataset$X$EDAD_ANO))
+
+
+
+
+
+
+
+
+
+```
+## Random Forest Classifier
+
+We built a Random Forest classifier with the predictors that were important in the Boruta analysis. 
+
+```{r include=FALSE}
+
+
+#load(file = "featureSelectionDeath.RData")
+
+
+#seed for the random numbers generator
+set.seed(123)
+
+
+#perfom cross-validation cv.trial times
+
+
+#cv.trial = 30
+#accumulate the results in the ROC and precision-recall curve
+#roc.auc = matrix(0,1, cv.trial)
+#pr.auc = matrix(0,1, cv.trial)
+
+
+#divide subset datain half
+smp.size = floor(0.5 * nrow(dataset$X))
+
+
+
+#for (trial in seq(1,cv.trial)) {
+
+# print(trial)
+
+sample.ind <- createDataPartition(dataset$y, p = 0.5, list = FALSE)
+
+#construct a classifier
+
+train.x = data.matrix(dataset$X[sample.ind,])
+#train.y = as.numeric(dataset$y[sample.ind])-1
+train.y = dataset$y[sample.ind]
+
+test.x = data.matrix(dataset$X[-sample.ind,])
+#test.y = as.numeric(dataset$y[-sample.ind])-1
+test.y = dataset$y[-sample.ind]
+
+# = number of rounds candidates = #
+nt=c(50, 2000)
+nv= c(5,20)
+for (i in seq(1,50)) {
+  print(i)
+  
+  # = max_depth candidates = #
+  num.trees = sample(nt[1]:nt[2],1)
+  num.var = sample(nv[1]:nv[2],1)
+  print(c(num.trees, num.var))
+ # num.trees = 100
+   #construct a classifier
+  rf_res <-randomForest(y = as.factor(train.y), x= train.x, 
+                        ntree=num.trees, mtry = num.var, keep.forest = TRUE)
+  
+  
+   #predict output. This is what you want to implement in an app
+  rf_pred = predict(rf_res,test.x,type = "prob")
+  #init an array with zeros
+  ground.truth = array(0, dim = dim(rf_pred)[1] )
+  ground.truth[test.y==1] = 1
+  
+  
+  #performance results
+  roc<-roc.curve(scores.class0 = rf_pred[,2], weights.class0 = ground.truth, curve= TRUE)
+  print(roc$auc)
+  print('-----')
+  
+  
+}
+
+################
+#optimize mtry and ntree
+
+
+set.seed(123)
+control <- trainControl(method="repeatedcv", number=10, repeats=3, search="grid")
+tunegrid <- expand.grid(.mtry=c(1:15))
+#control <- trainControl(method="repeatedcv", number=10, repeats=3, search="random")
+metric <- "Accuracy"
+mtry <- sqrt(ncol(train.x))
+modellist <- list()
+for (i in seq(1,20)) {
+  #construct a classifier
+  rf_res <-train(y = as.factor(train.y), x= train.x, method="rf", metric=metric, tuneGrid = tunegrid, trControl=control)
+  print(rf_res)
+  key <- toString(ntree)
+  modellist[[key]] <- fit
+}
+# compare results
+results <- resamples(modellist)
+summary(results)
+dotplot(results)
+
+
+
+
+```
+
+

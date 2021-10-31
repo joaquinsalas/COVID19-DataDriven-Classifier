@@ -1,0 +1,217 @@
+---
+title: 'Neural Network Classifier'
+author: "Joaquin Salas"
+date: "2020.08.04"
+output:
+  pdf_document: default
+  word_document: default
+  
+  #data saved in: "featureSelection.RData"
+  #save(list = ls(all.names=TRUE), file = "featureSelection.RData")
+  
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+This program construct a classifier to discriminate between those that live and those that die.
+Starting with a dataset, it trains a classifier and evaluate it using ROC and precision-recall curves.
+The program divides the dataset in half for training and half for testing. It does so $n$-times. Each time, it analyses the performance. The output files include
+
+* *classifier*\_*entity*\_ROC\_*iteration*.csv
+It includes the points in the ROC curve
+
+* *classifier*\_*entity*\_PR\_*iteration*.csv
+It includes the points in the precision-recall curve
+
+*classifier* is an acronym where *RF*, *NN*, *SVM*, *XGB* stand for random forest, neural network, support vector machine and extreme gradient boosting. Entity is a two letters word referencing the state, e.g., DF, QT, SL stand for Mexico City, Queretaro and Sinaloa.
+
+*iteration* stands for the number of iteration where the performance was evaluated.
+
+
+```{r  echo=FALSE}
+
+
+
+
+#import libraries
+suppressMessages(library(caret))
+suppressMessages(library(caTools))
+
+suppressMessages(library(data.table)) # setnames
+
+suppressMessages(require(dplyr))
+
+suppressMessages(require(dummies)) #dummy variables
+suppressMessages(require(ggplot2))
+suppressMessages(require("Hmisc"))
+suppressMessages(library("installr"))
+suppressMessages(library(lubridate, warn.conflict = FALSE, quietly = TRUE))
+suppressMessages(library(missForest)) #missForest
+suppressMessages(library(matrixStats)) #colSds, standard deviation
+
+suppressMessages(require(multiROC))
+suppressMessages(require(nbpMatching))
+
+suppressMessages(require(plotly))
+suppressMessages(require(PRROC))
+suppressMessages(library(pROC,verbose = TRUE )) #pROC, ROC analysis
+suppressMessages(require(plyr))
+
+suppressMessages(suppressWarnings(library(randomForest))) #for randomForest
+suppressMessages(library(readr))
+
+suppressMessages(library(stringi))
+
+
+suppressMessages(library(tidyr)) #fill
+suppressMessages(require(neuralnet)) #neural networks
+
+
+
+#working directories
+code.dir = 'E:/Documents/informs/research/2020.06.25 predicting death/code/'
+setwd(code.dir)
+
+#directories with files that  I use across many applications related to COVID
+data.dir = 'E://Documents//informs//research//2020.06.25 predicting death//data//'
+
+
+
+#filename = paste(code.dir,"readDataFeatures.R", sep = "")
+#source(filename)
+
+filename = paste(code.dir,"preprocessData.R", sep = "")
+source(filename)
+
+#filename = paste(code.dir,"balanceData.R", sep = "")
+#source(filename)
+
+
+#prefix = "QT"
+#file.root = "20200802 CENSO NOMINAL "
+
+
+
+#prefix = "SL"
+#file.root = "20200730  CENSO NOMINAL "
+
+prefix = "DF"
+file.root = "20200626 CENSO NOMINAL "
+
+#acquire and preprocess the data to construct a classifier
+dataset = preprocessData(prefix, file.root, data.dir)
+
+
+
+#seed for the random numbers generator
+set.seed(123)
+
+
+#perfom cross-validation cv.trial times
+
+
+
+#divide subset datain half
+smp.size = floor(0.5 * nrow(dataset$X))
+
+
+
+#for (trial in seq(1,cv.trial)) {
+
+#  print(trial)
+
+sample.ind <- createDataPartition(dataset$y, p = 0.5, list = FALSE)
+
+#construct a classifier
+
+train.x = data.matrix(dataset$X[sample.ind,])
+#train.y = as.numeric(dataset$y[sample.ind])-1
+train.y = dataset$y[sample.ind]
+
+test.x = data.matrix(dataset$X[-sample.ind,])
+#test.y = as.numeric(dataset$y[-sample.ind])-1
+test.y = dataset$y[-sample.ind]
+
+
+result = balanceData(train.x, train.y)
+train.x = result$X
+train.y = result$y
+
+
+
+train = data.frame(train.x,y = train.y)
+
+
+#cv.trial = 1
+#accumulate the results in the ROC and precision-recall curve
+
+max.num.layers = 3
+max.num.units = 10
+roc.auc = matrix(0,max.num.units, max.num.layers)
+pr.auc = matrix(0,max.num.units, max.num.layers)
+
+
+
+
+for (num.layers in seq(2,max.num.layers)) {
+  
+  for (num.units in seq(7,max.num.units)) {
+    
+    print (c(num.layers, num.units))
+    
+    architecture = rep(num.units, num.layers)
+    #construct a classifier
+    nn.classifier=neuralnet(y~. ,data=train, hidden=architecture, act.fct = "logistic",
+                            linear.output = FALSE, err.fct = "ce", threshold = 0.1, lifesign = 'full', stepmax = 1e+05)
+    
+    
+    #result = balanceData(test.x, test.y)
+    #test.x = result$X
+    #test.y = result$y
+    
+    #predict output. This is what you want to implement in an app
+    nn.pred = predict(nn.classifier,test.x,type = "prob")
+    
+    #init an array with zeros
+    ground.truth = array(0, dim = length(nn.pred) )
+    ground.truth[test.y==1] = 1
+    
+    
+    #performance results
+    roc<-roc.curve(scores.class0 = nn.pred, weights.class0 = ground.truth, curve= TRUE)
+    pr<-pr.curve(scores.class0 =  nn.pred, weights.class0 = ground.truth, curve= TRUE)
+    
+    
+    #save results for analysis
+    roc.auc[num.units, num.layers] = roc$auc
+    pr.auc[num.units, num.layers] = pr$auc.integral
+    
+    
+    #save results for each classifier
+    #  filename = sprintf("../data/NN_%s_roc_%03d.csv", prefix, trial)
+    #  write.csv(roc$curve,filename)
+    
+    #  filename = sprintf("../data/NN_%s_pr_%03d.csv", prefix, trial)
+    #  write.csv(pr$curve,filename)
+    
+    
+    print(roc$auc)
+    print(pr$auc.integral)
+    
+  }
+}
+
+
+filename = sprintf("../data/NN_%s_pr_FineTuning.csv", prefix)
+write.csv(pr.auc,filename)
+
+filename = sprintf("../data/NN_%s_roc_FineTuning.csv", prefix)
+write.csv(roc.auc,filename)
+
+
+
+
+```
+
+
